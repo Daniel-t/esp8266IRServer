@@ -1,18 +1,15 @@
 #include <ESP8266WiFi.h>
-#include <WiFiClient.h>
+//#include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <IRremoteESP8266.h>
+#include <DNSServer.h>            //Local DNS Server used for redirecting all requests to the configuration portal
+#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
  
-// WLAN data 
-const char* ssid = "...";
-const char* password = "...";
- 
-// static IP
-IPAddress ip(192,168,0,201);
-IPAddress gateway(192,168,0,1);
-IPAddress subnet(255,255,255,0);
- 
+
+WiFiManager wifiManager;
+
+
 MDNSResponder mdns;
 ESP8266WebServer server(80);
  
@@ -171,23 +168,17 @@ void dump(int a1,int a2,int a3){
 void handleNotFound(){
   server.send(404, "text/plain", "404");
 }
- 
+
+void handleReset(){
+  wifiManager.resetSettings();
+}
+
 void setup(void){
   irsend.begin();
   Serial.begin(9600);
-  WiFi.begin(ssid, password);
- // WiFi.config(ip, gateway, subnet);
-  Serial.println("");
-  // Wait for connection
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print("=");
-  }
-  Serial.println("");
-  Serial.print("Connected to ");
-  Serial.println(ssid);
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+
+  
+  wifiManager.autoConnect("IRSVR");
   
   if (mdns.begin("irsvr", WiFi.localIP())) {
     Serial.println("MDNS responder started");
@@ -195,8 +186,10 @@ void setup(void){
   
   server.on("/", handleRoot);
   server.on("/ir", handleIr); 
+    server.on("/reset",handleReset);
+
   server.onNotFound(handleNotFound);
-  
+    
   server.begin();
   Serial.println("HTTP server started");
 }
