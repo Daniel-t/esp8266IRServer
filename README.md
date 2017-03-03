@@ -14,3 +14,9 @@ http://IP/ir?code=CODE&bits=BITS&protocol=Protocol
 CODE is the code in HEX
 BITS is the number of BITS to send
 PROTOCOL is the Protocol name as defined in the IRRemoteESP8266 Library
+
+Commands can also be  sent with Original Button Codes (OBC) for Samsung and NEC protocols
+
+http://IP/ir?deviceCode=X&subDeviceCode=Y&obc=Z&protocol=Protocol
+
+subDeviceCode is Optional, if omitted for Samsung protocol, the deviceCode is repeated.
