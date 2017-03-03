@@ -5,8 +5,8 @@
 #include <IRremoteESP8266.h>
  
 // WLAN data 
-const char* ssid = "57";
-const char* password = "bar3H0use";
+const char* ssid = "...";
+const char* password = "...";
  
 // static IP
 IPAddress ip(192,168,0,201);
