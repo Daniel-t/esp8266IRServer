@@ -5,7 +5,7 @@
 #include <IRremoteESP8266.h>
 #include <DNSServer.h>            //Local DNS Server used for redirecting all requests to the configuration portal
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
- 
+#include <FS.h>  
 
 WiFiManager wifiManager;
 
@@ -13,9 +13,21 @@ WiFiManager wifiManager;
 MDNSResponder mdns;
 ESP8266WebServer server(80);
  
-// set your pin here
-IRsend irsend(4);
- 
+int SERIAL_SPEED = 115200;
+
+int RECV_PIN = 5; //an IR detector/demodulator is connected to GPIO  //D1 
+int SEND_PIN = 4; // D2 paired with a 1.6 Ohm resistor
+
+char * CONFIG_PATH = "config.txt";
+char * CONFIG_BACKUP_PATH = "config.bak";
+
+
+IRrecv irrecv(RECV_PIN);
+IRsend irsend(SEND_PIN);
+
+decode_results  results1;        // Somewhere to store the results
+decode_results  results;        // Somewhere to store the results
+
 void handleRoot() {
  server.send(200, "text/html", "Please specify command! Form: /ir?code=xxx&bits=xx&protocol=x");
 }
@@ -28,6 +40,7 @@ void handleIr(){
   String deviceCode=server.arg("deviceCode");
   String subDeviceCode=server.arg("subDeviceCode");
   String obc=server.arg("obc");
+  String pronto=server.arg("pronto");
 
 //  String webOutput = "Protocol: "+protocol+"; Code: "+codestring+"; Bits: "+bitsstring + " - ("+deviceCode + subDeviceCode + obc +")";
   String webOutput = "";
@@ -35,6 +48,7 @@ void handleIr(){
   Serial.println(webOutput);
 
   unsigned long code =0;
+  int rc5_control_bit=0;
   
   if ((codestring != "")&&(bitsstring != "")){
     //unsigned long code = codestring.toInt();
@@ -43,6 +57,8 @@ void handleIr(){
     code = strtoul(tarray,NULL,16);  
     // unsigned long code = atol(codestring);
   }
+  int bits = bitsstring.toInt();
+
   
   if ((obc != "")&&(deviceCode != "")){
     //convert OBC & deviceCode to hex CodeString
@@ -76,9 +92,40 @@ void handleIr(){
    Serial.println("----");
    if (protocol=="Samsung") {
     code=combineBytes(iDeviceCodeLSB,iSubDeviceCodeLSB,iOBCLSB,iOBCLSB_INV);
-   } else if (protocol=="NEC") {
+   } else if (protocol=="NEC" || protocol=="NECx2") {
     code=combineBytes(iDeviceCodeLSB,iDeviceCodeLSB_INV,iOBCLSB,iOBCLSB_INV);
-   } else {
+   } else if (protocol=="RC6") {
+    /*NOT TESTED*/
+    code=combineBytes(0,0,iDeviceCode,iOBC);
+    bits=20;
+   }  else if (protocol=="RC5") {
+    /*NOT TESTED*/
+    /*control=1,device=5,command=6*/
+    rc5_control_bit=abs(rc5_control_bit-1);
+    code=rc5_control_bit;
+    code+=code<<5 + iDeviceCodeLSB;
+    code+=code<<6 + iOBCLSB;   
+    bits=12;
+   } else if (protocol=="JVC") {
+    /*NOT TESTED*/
+    code=combineBytes(0,0,iDeviceCodeLSB,iOBCLSB);
+    bits=16;
+   }  else if (protocol=="Sony") {
+    /*NOT TESTED & highly suspect, need to seem some example codes*/
+    code=iOBCLSB;
+    if (subDeviceCode != "") {
+      bits=20;
+      code=code<<5+iDeviceCodeLSB;
+      code=code<<8+iSubDeviceCodeLSB;
+
+    }else if (iDeviceCode > 2^5){
+      bits=15;
+      code=code<<8+iDeviceCodeLSB;
+    } else {
+      bits=12;
+      code=code<<5+iDeviceCodeLSB;
+    }
+   } else  {
     code=0;
     server.send(404, "text/html", "Protocol not implemented for OBC!");
    }
@@ -90,7 +137,6 @@ void handleIr(){
   }
   
   if (code!=0){
-    int bits = bitsstring.toInt();
     Serial.println(code,HEX);
     
     if (protocol == "NEC"){
@@ -132,8 +178,51 @@ void handleIr(){
     else {
       server.send(404, "text/html", "Protocol not implemented!");
     }
-  }
-  else {
+  }  else if (pronto != "") {
+    //pronto code
+    //blocks of 4 digits in hex
+    //preample is 0000 FREQ LEN1 LEN2
+    //followed by ON/OFF durations in FREQ cycles
+    //Freq needs a multiplier
+    //blocks seperated by %20
+    //we are ignoring LEN1 & LEN2 for this use case as not allowing for repeats
+    //just pumping all 
+    int spacing=5;
+    int len= pronto.length();
+    int out_len =((len-4)/spacing)-3;
+    unsigned int prontoCode[out_len];
+    unsigned long timeperiod;
+    unsigned long multiplier = .241246 ;
+
+    int pos=0;
+    unsigned long hz;
+    if (pronto.substring(pos,4) != "0000"){
+      server.send(404,"text/html","unknown pronto format!");
+      //unknown pronto format
+    } else {
+      pos+=spacing;
+      
+      hz=strtol(pronto.substring(pos,pos+4).c_str(),NULL,16);
+      hz=(hz * .241246);
+      hz=1000000/hz;
+      //XXX TIMING IS OUT
+      timeperiod=1000000/hz;
+      pos+=spacing;//hz
+      pos+=spacing;//LEN1
+      pos+=spacing;//LEN2
+      delay(0);
+      for (int i = 0; i < out_len; i++){
+          prontoCode[i]=(strtol(pronto.substring(pos,pos+4).c_str(),NULL,16) * timeperiod) + 0.5;
+          pos+=spacing;
+      }
+      //sendRaw
+      yield();
+     
+      irsend.sendRaw(prontoCode,out_len,hz/1000);
+      server.send(200,"text/html","pronto code!");
+    }
+    
+  } else {
     server.send(404, "text/html", "Missing code or bits!");
   }
 }
@@ -173,27 +262,150 @@ void handleReset(){
   wifiManager.resetSettings();
 }
 
+void handleLoadConfig(){
+  File f;
+  if (!SPIFFS.exists(CONFIG_PATH)){
+    //doesn't exist create blank config
+    f = SPIFFS.open(CONFIG_PATH,"w");
+    f.println("{\"pages\":[{\"name\":\"New Page\",\"buttons\":[]}]}");
+    Serial.println("CREATED");
+    f.close();
+  }
+  f = SPIFFS.open(CONFIG_PATH,"r");
+  String s=f.readStringUntil('\n');
+  Serial.println(s);
+  f.close();
+  String callback=server.arg("callback");
+  server.send(200,"text/plain",callback+"("+s+")"); 
+}
+
+void handleLoadBackupConfig(){
+  File f;
+  if (!SPIFFS.exists(CONFIG_BACKUP_PATH)){
+    f = SPIFFS.open(CONFIG_BACKUP_PATH,"w");
+    f.println("{\"pages\":[{\"name\":\"New Page\",\"buttons\":[]}]}");
+    Serial.println("CREATED");
+    f.close();
+  }
+  f = SPIFFS.open(CONFIG_BACKUP_PATH,"r");
+  String s=f.readStringUntil('\n');
+  Serial.println(s);
+  f.close();
+  String callback=server.arg("callback");
+  server.send(200,"text/plain",callback+"("+s+")"); 
+ 
+}
+
+void handleSaveConfig(){
+  Serial.println("Saving");
+  File f;
+  File f2;
+  if (SPIFFS.exists(CONFIG_PATH)){
+    f = SPIFFS.open(CONFIG_PATH,"r");
+    f2 = SPIFFS.open(CONFIG_BACKUP_PATH,"w");
+    String s=f.readStringUntil('\n');
+    f2.println(s);
+    Serial.println("BACKED UP");
+    f.close();
+    f2.close();
+    Serial.println("Config backuped");
+  }
+  f = SPIFFS.open(CONFIG_PATH,"w");
+  String newConfig=server.arg("config");
+  f.println(newConfig);
+  Serial.println(newConfig);
+  f.close();
+  String callback=server.arg("callback");
+  server.send(200,"text/plain",callback+"('SAVED')"); 
+ 
+}
+
+void handleDeleteConfig(){
+  File f;
+  String callback=server.arg("callback");
+  if (!SPIFFS.exists(CONFIG_PATH)){
+    Serial.println("FILE NOT FOUND");
+  } else {
+    SPIFFS.remove(CONFIG_PATH);
+    Serial.println("FILE DELETED");
+  }
+  server.send(200,"text/plain",callback+"(\"File Deleted\")");
+ };
+
+
+void learnHandler(){
+  Serial.println("In Learning Handling");
+  String callback=server.arg("callback");
+   
+  String proto="";
+  {  // Grab an IR code
+   // dumpInfo(&results);           // Output the results
+    switch (results.decode_type) {
+      default:
+      case UNKNOWN:      proto=("UNKNOWN");       break ;
+      case NEC:          proto=("NEC");           break ;
+      case SONY:         proto=("Sony");          break ;
+      case RC5:          proto=("RC5");           break ;
+      case RC6:          proto=("RC6");           break ;
+      case DISH:         proto=("DISH");          break ;
+      case SHARP:        proto=("SHARP");         break ;
+      case JVC:          proto=("JVC");           break ;
+      case SANYO:        proto=("Sanyo");         break ;
+      case MITSUBISHI:   proto=("MITSUBISHI");    break ;
+      case SAMSUNG:      proto=("Samsung");       break ;
+      case LG:           proto=("LG");            break ;
+      case WHYNTER:      proto=("Whynter");       break ;
+     // case AIWA_RC_T501: Serial.print("AIWA_RC_T501");  break ;
+      case PANASONIC:    proto=("PANASONIC");     break ;
+    }
+    //results->value
+    //Serial.print(results->value, HEX);
+    
+    Serial.println("Here");           // Blank line between entries
+    irrecv.resume();              // Prepare for the next value
+    String output=callback+"({protocol:\""+proto+"\", value:\""+String(results.value,HEX)+"\", bits:\""+String(results.bits)+"\"})";
+    Serial.println(output);
+    server.send(200, "text/html", output);
+  }
+}
+
 void setup(void){
   irsend.begin();
-  Serial.begin(9600);
-
+  Serial.begin(SERIAL_SPEED);
+  SPIFFS.begin();
+  
   
   wifiManager.autoConnect("IRSVR");
   
   if (mdns.begin("irsvr", WiFi.localIP())) {
     Serial.println("MDNS responder started");
   }
+
   
   server.on("/", handleRoot);
   server.on("/ir", handleIr); 
-    server.on("/reset",handleReset);
+  server.on("/reset",handleReset);
+  server.on("/learn",learnHandler);
+  server.on("/loadConfig",handleLoadConfig);
+  server.on("/loadBackupConfig",handleLoadBackupConfig);
+  
+  server.on("/saveConfig",handleSaveConfig);
+  server.on("/deleteConfig",handleDeleteConfig);
 
   server.onNotFound(handleNotFound);
     
   server.begin();
   Serial.println("HTTP server started");
+  irrecv.enableIRIn();
+
 }
  
 void loop(void){
   server.handleClient();
+  if (irrecv.decode(&results1)){
+    Serial.println("Signal recveived");
+     irrecv.decode(&results);
+     irrecv.resume();
+  }
+  
 }
