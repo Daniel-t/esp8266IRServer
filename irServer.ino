@@ -181,10 +181,10 @@ void handleIr(){
   }  else if (pronto != "") {
     //pronto code
     //blocks of 4 digits in hex
-    //preample is 0000 FREQ LEN1 LEN2
+    //preamble is 0000 FREQ LEN1 LEN2
     //followed by ON/OFF durations in FREQ cycles
     //Freq needs a multiplier
-    //blocks seperated by %20
+    //blocks separated by %20
     //we are ignoring LEN1 & LEN2 for this use case as not allowing for repeats
     //just pumping all 
     int spacing=5;
@@ -403,7 +403,7 @@ void setup(void){
 void loop(void){
   server.handleClient();
   if (irrecv.decode(&results1)){
-    Serial.println("Signal recveived");
+    Serial.println("Signal received");
      irrecv.decode(&results);
      irrecv.resume();
   }
